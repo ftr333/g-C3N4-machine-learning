@@ -1,0 +1,817 @@
+import pandas as pd
+import numpy as np
+import time
+import seaborn as sns
+from scipy.interpolate import make_interp_spline
+from scipy import interpolate
+
+from sklearn import metrics
+import matplotlib.pyplot as plt
+import os
+from fancyimpute import KNN
+
+from sklearn.inspection import partial_dependence
+from sklearn.model_selection import train_test_split
+from sklearn.model_selection import cross_val_score
+from sklearn.preprocessing import StandardScaler
+
+from torch.ao.nn.quantized.functional import interpolate
+
+
+def draw_partial_dependence_2d(model,x_train,config,save = False):
+    pdp = partial_dependence(model,x_train,features=config['features'],kind='average',grid_resolution=config['grid_resolution'])
+    plot_x = pdp['grid_values'][0]
+    plot_y = pdp['average'].ravel()
+
+    
+    xnew = np.linspace(plot_x.min(),plot_x.max(),300)
+
+    
+    spl = make_interp_spline(plot_x,plot_y,k = 3 )
+    ynew = spl(xnew)
+
+    
+    plt.plot(xnew,ynew,linewidth=1,color=config['color'],antialiased=True)
+
+    
+    font = {'family' : 'Times New Roman',
+            'size' : 16,'weight' : 'bold',
+            'color' : 'black'}
+
+    
+    if save:
+        os.makedirs(f'{config["model_path"]}',exist_ok=True)
+        plt.savefig(f'{config["model_path"]}/{config["model_name"]}.jpg',dpi=300)
+
+    plt.show()
+
+columns_need_fill = ['Urea','Melamine','Dcda',
+                     'Time(h)','PM(g)','Heat(℃)',
+                     'HR(℃/min)','ratio(%)',
+                    'load(g)','NO(ppm)','rate(mL/min)'
+                     ,'Xe','Wu','LED','area(cm²)',
+                    'Intensity(W)','BET(m²/g)','Eg(eV)','NO₂(%)']
+train_properties_dict = {'Urea':'Urea',
+                         'Melamine':'Mela',
+                         'Dcda':'DCDA',
+                         'Time(h)':'T',
+                         'area(cm²)':'area',
+                         'PM(g)':'PM',
+                         'HR(℃/min)':'HR',
+                         'Heat(℃)':'H',
+                         'ratio(%)':'ratio',
+                         'load(g)':'LD',
+                         'NO(ppm)':'NO',
+                         'rate(mL/min)':'Rate',
+                         'Xe':'Xe',
+                         'Wu':'Wu',
+                         'LED':'Led',
+                         'NO₂(%)':'NO₂',
+                         'Intensity(W)':'W',
+                         'BET(m²/g)':'BET(m²/g)',
+                         'Eg(Eg)':'Eg',
+                         }
+
+heatmap_feature_name = ['Urea','Mela','DCDA','T','PM','HR','H','ratio','NO2',
+                        'LD','NO','Rate','Xe','Wu','Led','area','W','BET','Eg']
+
+def train_properties_and_names():
+    properties = []
+    names = []
+    for k, v in train_properties_dict.items():
+        properties.append(k)
+        names.append(v)
+
+    return (properties, names)
+
+
+train_properties, feature_names = train_properties_and_names()
+
+def read_csv(filepath, encoding='utf8', index='id'):
+    datas = pd.read_csv(filepath, encoding=encoding)
+    if index not in datas.columns:
+        datas.insert(0, index, (range(len(datas))), allow_duplicates=False)
+    return datas
+
+def save_csv(datas, filepath, encoding='utf8'):
+    datas = datas.loc[:, ~datas.columns.str.contains("Unnamed")]
+    datas.to_csv(filepath, encoding=encoding, header=True, index=False)
+
+def merge_data(datas, filled_data):
+    merged_data = datas.copy()
+    for col in filled_data.columns:
+        merged_data[col] = filled_data[col]
+
+    merged_data = merged_data.loc[:, ~merged_data.columns.str.contains("Unnamed")]
+    return merged_data
+
+def fill_data(datas, imputer=KNN(k=9, verbose=False)):
+    start_time = time.time()
+    print("Begin to process fill data.")
+    selected_data = pd.DataFrame(datas, columns=columns_need_fill)
+    filled_datas = pd.DataFrame((imputer.fit_transform(selected_data)), columns=(selected_data.columns))
+    merged_datas = merge_data(datas, filled_datas)
+    end_time = time.time()
+    print("Finished! Speed time: {} s.".format(end_time - start_time))
+    return merged_datas
+
+def draw_heatmap(data, method, cmap,size = 15, save=False):
+    corr = data.corr(method=method)
+
+    
+    n_cols = len(data.columns)
+    figsize = (n_cols * 1.5, n_cols * 1.5)
+
+    
+    sns.set(font_scale=1.5)
+    plt.rcParams['font.family'] = 'serif'
+    plt.rcParams['font.serif'] = ['Times New Roman']
+    plt.rcParams['font.weight'] = 'bold'
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    
+    mask = np.triu(np.ones_like(corr, dtype=bool), k=1)
+
+    
+    ax = sns.heatmap(
+        corr,
+        vmin=-1,
+        vmax=1,
+        center=0,
+        cmap=cmap,
+        square=True,
+        ax=ax,
+        annot=True,
+        annot_kws={'size': 15, 'weight': 'bold', 'color': 'black'},
+        cbar_kws={"shrink": 0.75},
+        mask=mask
+    )
+    
+    x_ticklabels = ['Urea','Melamine','Dcda','PM(g)','Time(h)', 'Heat(℃)','HR(℃/min)',
+                    'hata','modefiy', 'dope', 'ratio(%)','load(g)','area(cm²)','NO(ppm)',
+                    'rate(mL/min)', 'Xe', 'Wu', 'LED','Intensity(W)','BET(m²/g)',
+                    'Eg(eV)','NO₂(%)']
+
+    
+    ax.set_xticklabels(
+        x_ticklabels,
+        rotation = 45,
+        ha = 'center',
+        fontsize = size,
+    )
+    ax.set_yticklabels(
+        x_ticklabels,
+        rotation=0,
+        ha='right',
+        fontsize = size,
+    )
+
+    
+    cbar = ax.collections[0].colorbar
+    cbar.ax.tick_params(labelsize=20)
+
+
+    
+    if save:
+        output_dir = 'heatmap_images'
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        output_path = os.path.join(output_dir,f'{method}.jpg')
+        plt.savefig(output_path,format = "jpg",dpi = 600,
+                    bbox_inches = "tight",
+                    pil_kwargs = {'quality' : 95})
+        print(f"热力图已经保存到：{output_path}")
+    plt.show()
+
+
+
+def split_without_z_score_normalize(properties, target, test_size=0.2, seed=55):
+    x_train, x_test, y_train, y_test = train_test_split(properties, target, test_size=test_size, random_state=seed)
+    train_ids, test_ids = x_train["id"], x_test["id"]
+    x_train.drop(columns="id", inplace=True)
+    x_test.drop(columns="id", inplace=True)
+    return (x_train, x_test, y_train, y_test, train_ids, test_ids)
+def split_and_z_score_normalize(properties, target, test_size=0.2, seed=55):
+    x_train, x_test, y_train, y_test = train_test_split(properties, target, test_size=test_size, random_state=seed)
+    train_ids, test_ids = x_train["id"], x_test["id"]
+    x_train.drop(columns="id", inplace=True)
+    x_test.drop(columns="id", inplace=True)
+    scaler = StandardScaler().fit(x_train)
+    x_train_scaler_data, x_test_scaler_data = scaler.transform(x_train), scaler.transform(x_test)
+    x_train_scaler, x_test_scaler = pd.DataFrame(x_train_scaler_data), pd.DataFrame(x_test_scaler_data)
+    x_train_scaler.columns, x_test_scaler.columns = x_train.columns, x_test.columns
+    return (x_train_scaler, x_test_scaler, y_train, y_test, train_ids, test_ids)
+def split_train_test(datas, test_size=0.2, seed=55, normalize=True, target_col=["NO(%)"]):
+    train_properties_columns = train_properties.copy()
+    train_properties_columns.append("id")
+    properties = pd.DataFrame(datas, columns=train_properties_columns)
+    target = pd.DataFrame(datas, columns=target_col)
+    if normalize:
+        return split_and_z_score_normalize(properties, target, test_size, seed)
+    return split_without_z_score_normalize(properties, target, test_size, seed)
+
+
+def get_mse_rmse_mae_mape_smape_r2(y_true, y_pred):
+    mse = metrics.mean_squared_error(y_true, y_pred)
+    rmse = np.sqrt(metrics.mean_squared_error(y_true, y_pred))
+    mae = metrics.mean_absolute_error(y_true, y_pred)
+    mape = np.mean(np.abs((y_pred - y_true) / y_true)) * 100
+    smape = 2.0 * np.mean(np.abs(y_pred - y_true) / (np.abs(y_pred) + np.abs(y_true))) * 100
+    r2 = metrics.r2_score(y_true, y_pred)
+    return (mse, rmse, mae, mape, smape, r2)
+
+
+def model_performance_metrics(label, true, pred):
+    mse, rmse, mae, mape, smape, r2 = get_mse_rmse_mae_mape_smape_r2(true.values.ravel() / 100, pred / 100)
+    print("%s mse: %.5f | rmse: %.5f | mae: %.5f | mape: %.5f | smape: %.5f | r2: %.5f\n" % (
+     label, mse, rmse, mae, mape, smape, r2))
+    return r2
+
+
+def cross_validation(regressor, x_train, y_train, k=5):
+    scores = cross_val_score(regressor, x_train, (y_train.values.ravel()),
+      cv=k, scoring="r2")
+    score = np.mean(scores)
+    print("cv train R2: %.3f (+/- %.3f) \n" % (score, scores.std()))
+
+
+def process_regressor(regressor, x_train, x_test, y_train, y_test, cv=True):
+    regressor.fit(x_train, y_train.values.ravel())
+    if cv:
+        cross_validation(regressor, x_train, y_train)
+    return (
+     regressor.predict(x_train), regressor.predict(x_test))
+
+
+def draw_scatter(train_true, train_pred, test_true, test_pred, title,
+                  actual_text='actual', pred_text='prediction',save=False):
+
+    
+    plt.rcParams['font.family'] = 'Times New Roman'
+
+
+
+    font_common = {
+        'family': 'Times New Roman',
+        'color': '#2F4F4F',  # 深灰色
+        'weight': 'bold',
+        'size': 18
+    }
+
+    
+    sns.regplot(x=test_true, y=test_pred, color="orange", label="test")
+    sns.regplot(x=train_true, y=train_pred, color="dodgerblue", label="train")
+
+    
+    plt.xlabel(actual_text, fontdict=font_common,weight='bold')
+    plt.ylabel(pred_text, fontdict=font_common,weight='bold')
+    plt.xlim(0, 100)
+    plt.ylim(0, 100)
+
+    
+    legend_font = {'family': 'Times New Roman', 'weight': 'bold', 'size': 15}
+    plt.legend(loc="upper right", markerscale=1.5, prop=legend_font,frameon=True, bbox_to_anchor=(0.3, 1))
+
+
+
+    ax = plt.gca()
+
+    ax.tick_params(
+        axis='both',          
+        which='major',        
+        direction='out',       
+        length=8,            
+        width=2,             
+        color='black',      
+        labelsize=14,        
+        bottom=True,         
+        left=True,           
+        top=False,            
+        right=False           
+    )
+
+    ax.set_facecolor('white')
+
+    
+    for spine in ax.spines.values():
+        spine.set_linewidth(2)
+        spine.set_edgecolor('black')
+
+    
+    plt.grid(True,
+             axis='both',
+             linestyle='--',
+             linewidth=0.5,
+             color='gray',
+             alpha=0.6)
+
+    
+    _, _, _, _, _, train_r2 = get_mse_rmse_mae_mape_smape_r2(train_true.values.ravel() / 100, train_pred / 100)
+    _, test_rmse, _, _, _, test_r2 = get_mse_rmse_mae_mape_smape_r2(test_true.values.ravel() / 100, test_pred / 100)
+
+    plt.text(60, 26, f"Train R² = {(int(train_r2*1000)/1000):.3f}", **font_common)
+    plt.text(60, 18, f"Test R² = {test_r2:.3f}", **font_common)
+    plt.text(60, 10, f"RMSE = {test_rmse:.3f}", **font_common)
+
+    
+    plt.text(50, 90, title, **font_common, horizontalalignment="center")
+
+    
+    if save:
+        out_put = 'scatter_images'
+        if not os.path.exists(out_put):
+            os.makedirs(out_put)
+        output_path = os.path.join(out_put, f'{title}.jpg')
+        plt.savefig(output_path, format="jpg", dpi=600,
+                    bbox_inches="tight",
+                    pil_kwargs={'quality': 95})
+        print(f"测试图已保存：{output_path}")
+
+
+    plt.show()
+
+def draw_violin(data, config, which, bw_method='scott', save=False):
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+   
+    plt.rcParams['font.family'] = 'Times New Roman'
+    cfg = config[which]
+    bw_method = cfg.get('bw_method', bw_method)
+
+    
+    data = data[which].values.ravel()
+    scale_data = data * cfg['scale']
+
+   
+
+    min_val, max_val = scale_data.min(), scale_data.max()
+    step = cfg['step'] * cfg['scale']
+
+    scale_begin = max(0, int(min_val - step)) if cfg['begin'] < 0 else cfg['begin']
+    scale_end = int(max_val + step + 1) if cfg['end'] < 0 else cfg['end']
+
+    bins = range(scale_begin, scale_end, int(step))
+    segments = pd.cut(scale_data, bins)
+
+    mid_mapping = {
+        interval: interval.mid / cfg['scale']
+        for interval in segments.categories
+    }
+
+   
+    mid_points = segments.rename_categories(mid_mapping).astype(float)
+
+
+    plt.figure(figsize=cfg.get('figsize', (8, 6)))
+
+   
+    with sns.axes_style("whitegrid"):
+        ax = sns.violinplot(
+            x=mid_points,
+            inner='box',
+            bw_method=bw_method,
+            color=cfg['color'],
+            linewidth=cfg.get('linewidth', 1),
+            saturation=cfg.get('saturation', 0.75),
+            alpha = cfg.get('alpha',0.7)
+        )
+
+ 
+    plt.text(x = cfg['text_x'],y =cfg['text_y'],s = cfg['text'] ,family='Times New Roman', weight='bold',
+             size=(cfg['xtick_size']),
+             horizontalalignment='center',
+             transform=plt.gcf().transFigure,
+             verticalalignment='top',)
+
+    plt.xticks(fontproperties='Times New Roman', size=cfg['xtick_size'], weight='bold')
+
+
+    plt.yticks(fontproperties='Times New Roman', size=20, weight='bold')
+
+    plt.tick_params(direction="in", width=2)
+
+    plt.ylim(cfg['ylim_left'], cfg['ylim_right'])
+
+    ax = plt.gca()
+
+    ax.set_xlabel(
+    cfg['xlabel'],
+    fontproperties='Times New Roman',  
+    size=20,                       
+    weight='bold',                   
+    labelpad=2                     
+                )
+
+    ax.set_xticklabels(
+    ax.get_xticklabels(),
+    fontproperties='Times New Roman',
+    size=20,                         
+    weight='bold',                   
+    rotation=0,                      
+    ha='right',                       
+    va='top',                          
+    )
+    ax.xaxis.set_tick_params(pad=15)   
+
+    ax.set_yticks([cfg['ylim_left'],cfg['ylim_left']/2,0,cfg['ylim_right']/2,cfg['ylim_right']])  # 主刻度位置
+    ax.set_yticklabels([cfg['ylim_left'],cfg['ylim_left']/2,0,cfg['ylim_right']/2,cfg['ylim_right']])  # 主刻度标签
+
+    for spine in ax.spines.values():
+        spine.set_linewidth(cfg['bound_width'])
+        spine.set_color('black')
+
+    plt.grid(True,
+             axis='both',
+             linestyle='--',
+             linewidth=0.5,
+             color='gray',
+             alpha=0.6)
+
+    plt.subplots_adjust(top=0.9, bottom=0.1, left=0.1, right=0.9)
+
+
+    if save:
+        output_dir = 'violin_images'
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        output_path = os.path.join(output_dir, f'{cfg['image_name']}.jpg')
+        plt.savefig(output_path, format="jpg", dpi=600,
+                    bbox_inches="tight",
+                    pil_kwargs={'quality': 95})
+        print(f"fig save：{output_path}")
+
+    plt.show()
+
+def mid_mapping(data,cfg,key):
+    cf = cfg[key]
+
+    data = data[key].values.ravel()
+    scale_data = data * cf['scale']
+
+
+    min_val, max_val = scale_data.min(), scale_data.max()
+    step = cf['step'] * cf['scale']
+
+    scale_begin = max(0, int(min_val - step)) if cf['begin'] < 0 else cf['begin']
+    scale_end = int(max_val + step + 1) if cf['end'] < 0 else cf['end']
+
+    bins = range(scale_begin, scale_end, int(step))
+    segments = pd.cut(scale_data, bins)
+
+    mid_mapping = {
+        interval: interval.mid / cf['scale']
+        for interval in segments.categories
+    }
+  
+    mid_points = segments.rename_categories(mid_mapping).astype(float)
+    return mid_points
+
+def data_concatenate(df_1,df_2,cfg,key):
+    data = []
+    data.append(pd.DataFrame({
+        'Category': '100%',
+        'Group': '100%',
+        'Value': mid_mapping(df_1,cfg,key),
+    }))
+    data.append(pd.DataFrame({
+        'Category': '70%',
+        'Group': '70%',
+        'Value': mid_mapping(df_2,cfg,key),
+    }))
+    df = pd.concat(data, ignore_index=True)
+    return df
+
+
+def draw_violin_concatenate(data_1, data_2, config, which,i,bw_method='scott', save=False):
+    cfg = config[which]
+    data = data_concatenate(data_1, data_2, config, which)
+
+    custom_palette = [
+        "#54778C", 
+        "#7A9D7E" 
+    ]
+
+  
+    if 'color' in cfg:
+        custom_palette = cfg['color']
+
+    plt.rcParams['font.family'] = 'Times New Roman'
+    bw_method = cfg.get('bw_method', bw_method)
+    plt.figure(figsize=cfg.get('figsize', (8, 6)))
+
+    sns.set_style("whitegrid", {
+        'grid.linestyle': '--',
+        'grid.alpha': 0.4
+    })
+
+
+    ax = sns.violinplot(
+        x="Category",
+        y="Value",
+        hue="Group",
+        data=data,
+        dodge=False,       
+        split=False,
+        palette=custom_palette, 
+        bw_method=cfg.get('bw_method',0.2),
+        linewidth=cfg.get('linewidth', 1.5), 
+        saturation=1,    
+        width=0.9,         
+        gap=0.01,           
+        inner='box',       
+        scale='width',       
+        alpha = cfg.get('alpha',0.6),
+    )
+
+
+    for violin, alpha in zip(ax.collections[::2], [0.8, 0.8]):
+        violin.set_alpha(alpha)  
+
+
+
+
+    plt.text(x=cfg['text_x'], y=cfg['text_y'], s=cfg['text'],
+             family='Times New Roman', weight='bold',
+             size=cfg['xtick_size'],
+             horizontalalignment='center',
+             transform=plt.gcf().transFigure,
+             verticalalignment='top')
+
+
+    ax.set_xlabel("")  
+    ax.set_ylabel("") 
+
+    plt.xticks(fontproperties='Times New Roman',
+              size=cfg['xtick_size'],
+              weight='bold')
+
+    plt.yticks(
+        fontproperties='Times New Roman',
+        size=20,
+        weight='bold',
+        rotation=0,     
+        ha='right',     
+        va='center_baseline' 
+    )
+    ax.tick_params(
+        axis='both',       
+        which='major',      
+        direction='out',     
+        length=6,          
+        width=1.5,         
+        color='black',     
+        bottom=True,       
+        left=True,          
+        top=False,           
+        right=False        
+    )
+
+    ax.yaxis.set_tick_params(pad=15)
+    ax.xaxis.set_tick_params(pad=10)
+
+    for spine in ax.spines.values():
+        spine.set_linewidth(cfg['bound_width'])
+        spine.set_color('black')
+
+    plt.grid(True,
+             axis='both',
+             linestyle='--',
+             linewidth=0.5,
+             color='gray',
+             alpha=0.6)
+
+    plt.subplots_adjust(top=0.9, bottom=0.1, left=0.1, right=0.9)
+
+
+    if save:
+        output_dir = 'violin_images'
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        output_path = os.path.join(output_dir, f'{cfg['image_name']+ i}.jpg')
+        plt.savefig(output_path, format="jpg", dpi=600,
+                    bbox_inches="tight",
+                    pil_kwargs={'quality': 95})
+        print(f"小提琴图已保存：{output_path}")
+
+
+    plt.show()
+
+def draw_scatter_3(train_true, train_pred,val_true,val_pred,test_true, test_pred,title,
+                  actual_text='actual', pred_text='prediction',save=False):
+
+
+    plt.rcParams['font.family'] = 'Times New Roman'
+    
+
+
+
+    
+    font_common = {
+        'family': 'Times New Roman',
+        'color': '#2F4F4F',  # 深灰色
+        'weight': 'bold',
+        'size': 18
+    }
+
+   
+    sns.regplot(x=train_true, y=train_pred,
+                color="dodgerblue", label= 'train',
+                scatter_kws = {'alpha': 0.5, 's': 18})
+    sns.regplot(x=test_true, y=test_pred, color= '#FF69B4', label= 'test',
+                scatter_kws = {'alpha': 0.8, 's': 30})
+    sns.regplot(x=val_true, y= val_pred,
+                color="orange", label="val",
+                scatter_kws = {'alpha': 0.5, 's': 10})
+
+
+    plt.xlabel(actual_text, fontdict=font_common,weight='bold')
+    plt.ylabel(pred_text, fontdict=font_common,weight='bold')
+    plt.xlim(0, 100)
+    plt.ylim(0, 100)
+
+   
+    legend_font = {'family': 'Times New Roman', 'weight': 'bold', 'size': 15}
+    plt.legend(loc="upper right", markerscale=1.5, prop=legend_font,frameon=True, bbox_to_anchor=(0.3, 0.85))
+   
+
+
+    plt.tick_params(direction="in", width=2, labelsize=14)
+
+    
+    ax = plt.gca()
+
+    ax.set_facecolor('white')
+
+    
+    for spine in ax.spines.values():
+        spine.set_linewidth(2)
+        spine.set_edgecolor('black')
+
+
+    plt.grid(True,
+             axis='both',
+             linestyle='--',
+             linewidth=0.5,
+             color='gray',
+             alpha=0.6)
+
+
+    _, _, _, _, _, train_r2 = get_mse_rmse_mae_mape_smape_r2(train_true.values.ravel() / 100, train_pred / 100)
+    _, _, _, _, _, val_r2 = get_mse_rmse_mae_mape_smape_r2(val_true.values.ravel() / 100, val_pred / 100)
+    _, _, _, _, _, test_r2 = get_mse_rmse_mae_mape_smape_r2(test_true.values.ravel() / 100, test_pred / 100)
+
+    plt.text(60, 26, f"Train R² = {(int(train_r2*1000)/1000):.3f}", **font_common)
+    plt.text(60, 18, f"val   R² = {int(val_r2*1000)/1000:.3f}", **font_common)
+    plt.text(60, 10, f"test  R² = {int(test_r2*1000)/1000:.3f}", **font_common)
+
+
+    plt.text(50, 90, title, **font_common, horizontalalignment="center")
+
+
+    if save:
+        out_put = 'scatter_images'
+        if not os.path.exists(out_put):
+            os.makedirs(out_put)
+        output_path = os.path.join(out_put, f'{title}.jpg')
+        plt.savefig(output_path, format="jpg", dpi=600,
+                    bbox_inches="tight",
+                    pil_kwargs={'quality': 95})
+        print(f"fig save：{output_path}")
+
+
+    plt.show()
+
+
+def draw_partial_dependence_3d(model, x_train, config, save=False):
+
+    pdp = partial_dependence(
+        model, x_train,
+        features=config['features'],
+        kind='average',
+        grid_resolution=config['grid_resolution']
+    )
+
+
+    x_grid = pdp['grid_values'][0]  
+    y_grid = pdp['grid_values'][1] 
+    Z = pdp['average']             
+    XX, YY = np.meshgrid(x_grid, y_grid, indexing='ij')
+    tck = interpolate.bisplrep(XX,YY, Z, s=len(x_grid)*len(y_grid)*0.01)
+
+
+
+
+    x_highres = np.linspace(x_grid.min(), x_grid.max(), 100)
+    y_highres = np.linspace(y_grid.min(), y_grid.max(), 100)
+    xx, yy = np.meshgrid(x_highres, y_highres, indexing='ij') 
+
+
+    zz = interpolate.bisplev(x_highres, y_highres, tck) 
+
+
+    if zz.shape != xx.shape:
+        zz = zz.reshape(xx.shape)  
+
+    plt.rc('font', family='Times New Roman', weight='bold')
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection='3d')
+
+
+    norm = plt.Normalize(zz.min(), zz.max())
+    surf = ax.plot_surface(
+        xx, yy, zz,
+        cmap=config.get('cmap', 'viridis'),
+        norm=norm,       
+        rstride=1,          
+        cstride=1,
+        linewidth=0.2,
+        antialiased=True,
+        edgecolor='grey',
+        alpha=0.95
+    )
+
+
+    cbar = fig.colorbar(surf, ax=ax,
+                        location = 'left',    
+                        shrink=0.8,             
+                        anchor = (-0.2,0.5),    
+                        aspect=20,             
+                        pad = -0.15             
+                        )
+    cbar.set_label('Partial Dependence',
+                   fontsize=16,
+                   weight='bold',
+                   labelpad=10,                   
+                   rotation=90,                    
+                   horizontalalignment='center',    
+                   verticalalignment='center',    
+                   )
+    cbar.ax.tick_params(labelsize=14)
+    cbar.ax.yaxis.set_ticks_position('left')
+    cbar.ax.yaxis.set_label_position('left')
+
+
+    plt.subplots_adjust(left=0.05, right=0.95, top=0.95, bottom=0.1)
+
+
+    plt.xticks(
+        fontproperties='Times New Roman',
+        size=14,
+        weight='bold',
+        rotation=0,     
+        ha='right',     
+        va='center_baseline'  
+    )
+    plt.yticks(
+        fontproperties='Times New Roman',
+        size=14,
+        weight='bold',
+        rotation=0,     
+        ha='right',     
+        va='center_baseline'  
+    )
+
+
+
+
+    ax.set_xlabel(config['feature1_label'], labelpad=15, fontsize=16,weight='bold')
+    ax.set_ylabel(config['feature2_label'], labelpad=15, fontsize=16,weight='bold')
+    ax.set_zlabel('NO(%)', labelpad=15, fontsize=16,weight='bold')
+
+    ax.view_init(elev=35, azim=-45)  
+    ax.zaxis.set_tick_params(
+    labelsize=14,                     
+    labelcolor='black',             
+    labelrotation= 0,                 
+    pad=8                             
+        )
+
+    if save:
+        os.makedirs(config['model_path'], exist_ok=True)
+        plt.savefig(
+            f"{config['model_path']}/{config['model_name']}.png",
+            dpi=600, bbox_inches='tight'
+        )
+    plt.show()
+
+
+
+
+def calculate_mre(model,x_train,x_test,y_train, y_test,):
+    
+    train_pred = model.predict(x_train)
+    test_pred = model.predict(x_test)
+    y_train = np.asarray(y_train)
+    y_test = np.asarray(y_test)
+    train_pred = np.asarray(train_pred)
+    test_pred = np.asarray(test_pred)
+
+
+
+    relative_errors = np.abs(y_train - train_pred) / y_train
+    mre_1 = np.mean(relative_errors)
+
+    relative_errors = np.abs(y_test - test_pred) / y_test
+    mre_2 = np.mean(relative_errors)
+    return mre_1,mre_2
