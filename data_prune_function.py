@@ -41,7 +41,7 @@ def get_scores(model,X_train,y_train,X_test,y_test, X_val=None, y_val=None):
         print('')
         return maes, rmse, r2
 
-
+#更新all_dat.pkl文件
 def reformat_results(folder):
     def fill_None(test_scores):
         if isinstance(test_scores, dict):
@@ -180,6 +180,10 @@ def get_data(
                 X, y, test_size=test_size,random_state=random_state
             )
     else:
+        '''
+        fixed_train_ids are the ids of entries that will always be kept in the training set
+        “fixed_train_ids”是那些将始终保留在训练集中的条目的标识（编号）。
+        '''
 
         X_fixed_train = X.loc[fixed_train_ids]
         y_fixed_train = y.loc[fixed_train_ids]
@@ -209,18 +213,18 @@ def prune_rd(
         autorestart=True
         # threshold_take_back = None
            ):
-
+    # Initialize初始化
     i_initial = 0
     remove = {}
     ids = {}
-    ids['train_val'] = X_pool.index.tolist()  
-    ids['old_val'] = []  
+    ids['train_val'] = X_pool.index.tolist()
+    ids['old_val'] = []
     size_old_val = []
-    ids_to_remove = []  
+    ids_to_remove = []
     test_scores = {'maes': [], 'rmse': [], 'r2': [], 'maes_m2': [], 'rmse_m2': [], 'r2_m2': []}
     val_scores = {'maes': [], 'rmse': [], 'r2': [], 'maes_m2': [], 'rmse_m2': [], 'r2_m2': []}
     test_fit = {'maes': [], 'rmse': [], 'r2': [], 'maes_m2': [], 'rmse_m2': [], 'r2_m2': []}
- 
+
 
     if pathlib.Path(file_out + '.tmp').is_file() and autorestart:
         print(file_out + '.tmp' + ' found.')
@@ -281,11 +285,11 @@ def prune_rd(
                 pd.concat([X_train,X_fixed_train]),
                 pd.concat([y_train,y_fixed_train])
                 )
-        # predict and get the abs errors,.sort_values()
+        # predict and get the abs errors,.sort_values()误差从小到大排序
         y_err_new_val = (model.predict(X_new_val) - y_new_val).abs().sort_values()
-        # drop by threshold，y_err_new_val<threshold
+        # drop by threshold，y_err_new_val<threshold是一个判断，即所有小于threshold的行为True，然后选中，变为列表
         ids_to_remove = y_err_new_val[y_err_new_val<threshold].index.tolist()
-
+        #加入测试集信息
         y_pred = model.predict(X_new_val)
         maes = metrics.mean_absolute_error(y_new_val, y_pred)
         mse = metrics.mean_squared_error(y_new_val, y_pred)
@@ -295,7 +299,7 @@ def prune_rd(
         test_fit['rmse'].append(rmse)
         test_fit['r2'].append(r2)
         if join_model:
-
+            #在此简单的将模型取代为测试模型
             if X_fixed_train is None:
                 model_test.fit(X_train,y_train)
             else:
@@ -307,19 +311,19 @@ def prune_rd(
             ids_to_remove = list(
                 set(ids_to_remove) & set(y_err_new_val[y_err_new_val<threshold2].index.tolist())
                 )
-
+        #预测精度最高值丢弃
         if min_drop is not None:
             if len(ids_to_remove)  < min_drop:
                 ids_to_remove = y_err_new_val.iloc[:min_drop].index.tolist()
-
+        #是否丢弃最大误差样本
         if drop_max_err is not None:
             ids_to_remove.extend(y_err_new_val.iloc[-drop_max_err:].index.tolist())
-
+        #获取size
         size_train_new_val = len(ids['train_new_val'])
         size_to_remove = len(ids_to_remove)
         size_all = X_pool.shape[0]
 
-
+        #返回
         if size_to_remove > size_train_new_val+120:
             with open(file_out,'wb') as f:
                 pickle.dump([size_old_val,ids,test_scores,val_scores],f)
@@ -330,12 +334,12 @@ def prune_rd(
         size_old_val.append(len(ids['old_val']))
         print('================================')
         print(f"Iteration {i}:")
-        print(f'==== : {size_to_remove} ')
-        print(f'=== old_val count: {size_old_val[-1]} (ratio = {size_old_val[-1]/size_all:.3f})')
-        print(f'ratio: {size_train_new_val}  (ratio = {size_train_new_val/size_all:.3f})')
+        print(f'丢弃训练词条数量 : {size_to_remove} ')
+        print(f'本次循环中 old_val 数量: {size_old_val[-1]} (ratio = {size_old_val[-1]/size_all:.3f})')
+        print(f'本次循环中新训练集大小，占比: {size_train_new_val}  (ratio = {size_train_new_val/size_all:.3f})')
         print("--- %s seconds ---" % (time.time() - start_time))
 
-
+        #获取测试评分和真实值评分从两个模型上
         start_time = time.time()
         # test scores
         if retrain:
@@ -352,13 +356,13 @@ def prune_rd(
         mse = metrics.mean_squared_error(y_test, y_pred)
         rmse = np.sqrt(mse)
         r2 = metrics.r2_score(y_test, y_pred)
-        print('================：')
+        print('修剪模型：')
         print(f'Test scores: maes={maes:.3f}, rmse={rmse:.3f}, r2={r2:.3f}')
         test_scores['maes'].append(maes)
         test_scores['rmse'].append(rmse)
         test_scores['r2'].append(r2)
 
-
+        #对我测试的模型
 
 
         # val scores
@@ -389,7 +393,7 @@ def prune_rd(
                     pd.concat([y_train_new_val, y_fixed_train])
                 )
 
-
+            #对我训练模型的测试
             y_pred = model_test.predict(X_new_val)
             maes = metrics.mean_absolute_error(y_new_val, y_pred)
             mse = metrics.mean_squared_error(y_new_val, y_pred)
@@ -405,7 +409,7 @@ def prune_rd(
             mse = metrics.mean_squared_error(y_test, y_pred)
             rmse = np.sqrt(mse)
             r2 = metrics.r2_score(y_test, y_pred)
-            print('==================')
+            print('测试模型上评分')
             print(f'Test scores: maes={maes:.3f}, rmse={rmse:.3f}, r2={r2:.3f}')
             test_scores['maes_m2'].append(maes)
             test_scores['rmse_m2'].append(rmse)
